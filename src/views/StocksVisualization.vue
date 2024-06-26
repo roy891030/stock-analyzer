@@ -1,62 +1,60 @@
 <template>
   <div>
-    <h1>Stocks Visualization</h1>
+    <h1>Stock Volume vs. Price</h1>
     <div ref="chart"></div>
   </div>
 </template>
 
 <script>
-import * as d3 from 'd3';
 import axios from 'axios';
+import * as d3 from 'd3';
 
 export default {
   data() {
     return {
-      stockData: []
+      stocks: []
     };
   },
   async created() {
-    await this.fetchTopStocks();
-    this.drawChart();
+    await this.fetchStocks();
   },
   methods: {
-    async fetchTopStocks() {
-      const apiKey = 'cptf6phr01qnvrr8udtgcptf6phr01qnvrr8udu0';
+    async fetchStocks() {
       try {
-        // 获取交易量最多的50支股票（假设API返回的数据）
-        const response = await axios.get(`https://finnhub.io/api/v1/stock/symbol?exchange=US&token=${apiKey}`);
-        const symbols = response.data.slice(0, 50).map(stock => stock.symbol);
-        
-        const stockDataPromises = symbols.map(async (symbol) => {
-          const quoteResponse = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
-          return {
-            symbol: symbol,
-            name: symbol, // 实际应用中，你可能需要获取股票名称
-            volume: quoteResponse.data.v, // 修改为成交量字段
-            price: quoteResponse.data.c
-          };
-        });
+        const response = await axios.get('http://localhost:3001/api/stocks');
+        const stockIds = response.data.map(stock => stock.id);
+        console.log('Fetched stock IDs:', stockIds);
 
-        this.stockData = await Promise.all(stockDataPromises);
-        this.stockData = this.stockData.filter(data => data.volume && data.price); // 确保过滤掉没有数据的股票
-        console.log('Fetched stock data:', this.stockData); // 调试输出
+        const historicalDataResponses = await Promise.all(
+          stockIds.map(id => axios.get(`http://localhost:3001/api/stocks/${id}/history`)
+            .then(response => response.data)
+            .catch(error => {
+              console.error(`Error fetching history for stock ID ${id}:`, error);
+              return []; // 返回空数组以过滤掉错误请求
+            })
+          )
+        );
 
-        this.drawChart(); // 在数据获取完后调用绘图函数
+        this.stocks = historicalDataResponses.flatMap(data => data)
+          .filter(data => data.date === '2024-06-26');
+        console.log('Filtered stocks for 2024-06-26:', this.stocks);
+
+        if (this.stocks.length > 0) {
+          this.createChart();
+        } else {
+          console.log('No stock data available for 2024-06-26');
+        }
       } catch (error) {
-        console.error('Error fetching stock data:', error);
+        console.error('Error fetching stocks:', error);
       }
     },
-    drawChart() {
-      if (!this.stockData.length) {
-        console.log('No stock data available to draw chart.'); // 调试输出
-        return;
-      }
+    createChart() {
+      const data = this.stocks;
+      console.log('Data to be visualized:', data); // 调试输出
 
-      const margin = { top: 20, right: 20, bottom: 30, left: 40 };
-      const width = 960 - margin.left - margin.right;
-      const height = 500 - margin.top - margin.bottom;
-
-      d3.select(this.$refs.chart).selectAll('*').remove(); // 清空之前的图表
+      const margin = { top: 20, right: 30, bottom: 40, left: 40 };
+      const width = 800 - margin.left - margin.right;
+      const height = 600 - margin.top - margin.bottom;
 
       const svg = d3.select(this.$refs.chart)
         .append('svg')
@@ -65,11 +63,13 @@ export default {
         .append('g')
         .attr('transform', `translate(${margin.left},${margin.top})`);
 
-      const x = d3.scaleLinear().range([0, width]);
-      const y = d3.scaleLinear().range([height, 0]);
+      const x = d3.scaleLinear()
+        .domain([0, d3.max(data, d => d.volume) || 1])
+        .range([0, width]);
 
-      x.domain([0, d3.max(this.stockData, d => d.volume)]);
-      y.domain([0, d3.max(this.stockData, d => d.price)]);
+      const y = d3.scaleLinear()
+        .domain([0, d3.max(data, d => d.close) || 1])
+        .range([height, 0]);
 
       svg.append('g')
         .attr('transform', `translate(0,${height})`)
@@ -78,51 +78,36 @@ export default {
       svg.append('g')
         .call(d3.axisLeft(y));
 
-      const tooltip = d3.select(this.$refs.chart).append('div')
-        .attr('class', 'tooltip')
-        .style('opacity', 0);
-
       svg.selectAll('circle')
-        .data(this.stockData)
-        .enter().append('circle')
-        .attr('r', 5)
+        .data(data)
+        .enter()
+        .append('circle')
         .attr('cx', d => x(d.volume))
-        .attr('cy', d => y(d.price))
-        .attr('fill', 'blue')
-        .on('mouseover', function(event, d) {
-          tooltip.transition()
-            .duration(200)
-            .style('opacity', .9);
-          tooltip.html(`${d.name}<br/>${d.symbol}`)
-            .style('left', (event.pageX + 5) + 'px')
-            .style('top', (event.pageY - 28) + 'px');
+        .attr('cy', d => y(d.close))
+        .attr('r', 5)
+        .style('fill', '#69b3a2')
+        .on('mouseover', (event, d) => {
+          d3.select(event.target)
+            .attr('r', 7)
+            .style('fill', '#ff6347');
+          svg.append('text')
+            .attr('id', 'tooltip')
+            .attr('x', x(d.volume) + 10)
+            .attr('y', y(d.close) - 10)
+            .text(`Stock ID: ${d.stock_id}, Volume: ${d.volume}, Close: ${d.close}`);
         })
-        .on('mouseout', function() {
-          tooltip.transition()
-            .duration(500)
-            .style('opacity', 0);
+        .on('mouseout', (event) => {
+          d3.select(event.target)
+            .attr('r', 5)
+            .style('fill', '#69b3a2');
+          d3.select('#tooltip').remove();
         });
-      
-      console.log('Chart drawn with data:', this.stockData); // 调试输出
     }
   }
 };
 </script>
 
-<style>
-.tooltip {
-  position: absolute;
-  text-align: center;
-  width: 60px;
-  height: 28px;
-  padding: 2px;
-  font: 12px sans-serif;
-  background: lightsteelblue;
-  border: 0px;
-  border-radius: 8px;
-  pointer-events: none;
-}
-
+<style scoped>
 svg {
   font: 10px sans-serif;
 }
@@ -131,5 +116,9 @@ svg {
 .axis line {
   fill: none;
   shape-rendering: crispEdges;
+}
+
+.axis text {
+  font-size: 12px;
 }
 </style>
